@@ -328,7 +328,7 @@ Categories for cleaning: surfactant|solvent|builder|bleach|enzyme|fragrance|pres
               role:"user",
               content: [
                 { type:"image", source:{ type:"base64", media_type:"image/jpeg", data: cleanedImg } },
-                { type:"text", text:"Photo of a product ingredient list. Detect type and analyze." }
+                { type:"text", text:"This is a photo of a product label. Read the ingredient list from this image. Even if the image is partially blurry or you can only read some ingredients, analyze whatever you CAN read. You MUST respond with valid JSON only — never respond with plain text, apologies, or explanations. If you truly cannot read ANY text at all, respond with this exact JSON: {\"product_type\":\"food\",\"product_name_guess\":\"Unknown Product\",\"product_summary\":\"Could not read the ingredient list from this image. Please try again with a clearer, closer photo of just the ingredient list.\",\"health_score\":0,\"ingredients\":[],\"recommendation\":\"Please retake the photo — hold the camera steady, zoom in on the ingredient list text, and ensure good lighting.\",\"better_alternatives\":[]}" }
               ]
             }];
           }
@@ -350,14 +350,32 @@ Categories for cleaning: surfactant|solvent|builder|bleach|enzyme|fragrance|pres
           const text = data.content?.map(c=>c.text||"").join("")||"";
           if(!text) throw new Error("Empty response from AI. Please try again.");
 
-          const parsed = JSON.parse(text.replace(/```json|```/g,"").trim());
+          // Try to extract JSON — handle cases where AI wraps it in text
+          let jsonStr = text.replace(/```json|```/g,"").trim();
+
+          // If AI responded with plain text instead of JSON, give a helpful error
+          let parsed;
+          try {
+            // Try to find JSON within the response (AI sometimes adds text before/after)
+            const jsonMatch = jsonStr.match(/\{[\s\S]*\}/);
+            if (jsonMatch) {
+              parsed = JSON.parse(jsonMatch[0]);
+            } else {
+              throw new Error("no JSON found");
+            }
+          } catch(parseErr) {
+            // AI couldn't read the image and responded in plain text
+            console.log("AI response was not JSON:", text.substring(0, 200));
+            throw new Error("Couldn't read the ingredient list from this image. Tips:\n\n📸 Zoom in closer to JUST the ingredient list\n💡 Make sure there's good lighting\n📋 Or tap 'Type Manually' and enter the ingredients by hand");
+          }
+
           setAnalysis(parsed); setView("results"); setTab("overview");
           const entry = {...parsed, id:Date.now(), scannedAt:new Date().toISOString()};
           const nh = [entry,...history].slice(0,50);
           setHistory(nh); ls.set("il-history",nh);
         } catch(err) {
           console.error("Analysis error:", err);
-          setError(`Analysis failed: ${err.message}`);
+          setError(`${err.message}`);
           setView("home");
         }
       };
