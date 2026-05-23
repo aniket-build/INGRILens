@@ -309,33 +309,105 @@ Categories for cleaning: surfactant|solvent|builder|bleach|enzyme|fragrance|pres
       },[]);
       useEffect(()=>()=>stopCam(),[stopCam]);
 
+      // Clean base64 data — strip any whitespace/newlines that iOS sometimes adds
+      const cleanBase64 = (str) => str.replace(/[\s\r\n]/g, '').replace(/^data:image\/\w+;base64,/, '');
+
       const analyze = async (content) => {
         setView("analyzing"); setError(null);
         try {
-          const msgs=[{role:"user",content:typeof content==="string"
-            ?`Ingredient list:\n\n${content}\n\nDetect type and analyze.`
-            :[{type:"image",source:{type:"base64",media_type:"image/jpeg",data:content}},{type:"text",text:"Photo of a product ingredient list. Detect type and analyze."}]
-          }];
-          const resp = await fetch(API_URL,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({model:"claude-sonnet-4-20250514",max_tokens:4096,system:ANALYSIS_PROMPT,messages:msgs})});
+          let msgs;
+          if (typeof content === "string") {
+            msgs = [{ role:"user", content:`Ingredient list:\n\n${content}\n\nDetect type and analyze.` }];
+          } else {
+            // Image content — ensure base64 is clean
+            const cleanedImg = cleanBase64(content);
+            if (!cleanedImg || cleanedImg.length < 100) {
+              throw new Error("Image data is empty or invalid. Try uploading from photos instead.");
+            }
+            msgs = [{
+              role:"user",
+              content: [
+                { type:"image", source:{ type:"base64", media_type:"image/jpeg", data: cleanedImg } },
+                { type:"text", text:"Photo of a product ingredient list. Detect type and analyze." }
+              ]
+            }];
+          }
+
+          console.log("Sending request to:", API_URL);
+          const resp = await fetch(API_URL,{
+            method:"POST",
+            headers:{"Content-Type":"application/json"},
+            body:JSON.stringify({model:"claude-sonnet-4-20250514",max_tokens:4096,system:ANALYSIS_PROMPT,messages:msgs})
+          });
+
+          console.log("Response status:", resp.status);
           const data = await resp.json();
-          if(data.error) throw new Error(data.error.message);
+          console.log("Response data:", data);
+
+          if(data.error) throw new Error(data.error.message || data.error.type || "API error");
+          if(!data.content) throw new Error("No content in response. Check Netlify Function logs.");
+
           const text = data.content?.map(c=>c.text||"").join("")||"";
+          if(!text) throw new Error("Empty response from AI. Please try again.");
+
           const parsed = JSON.parse(text.replace(/```json|```/g,"").trim());
           setAnalysis(parsed); setView("results"); setTab("overview");
           const entry = {...parsed, id:Date.now(), scannedAt:new Date().toISOString()};
           const nh = [entry,...history].slice(0,50);
           setHistory(nh); ls.set("il-history",nh);
-        } catch(err) { setError(`Analysis failed: ${err.message}`); setView("home"); }
+        } catch(err) {
+          console.error("Analysis error:", err);
+          setError(`Analysis failed: ${err.message}`);
+          setView("home");
+        }
+      };
+
+      // Resize any image to fit within API token limits
+      // 800px max + 60% JPEG quality keeps it under ~50K tokens
+      const resizeImage = (source, callback) => {
+        const img = source instanceof HTMLVideoElement ? null : new Image();
+        const doResize = (src, srcW, srcH) => {
+          const maxDim = 800;
+          let w = srcW, h = srcH;
+          if (w > maxDim || h > maxDim) {
+            const scale = Math.min(maxDim/w, maxDim/h);
+            w = Math.floor(w*scale); h = Math.floor(h*scale);
+          }
+          const c = document.createElement('canvas');
+          c.width=w; c.height=h;
+          c.getContext('2d').drawImage(src,0,0,w,h);
+          const url = c.toDataURL('image/jpeg', 0.6);
+          console.log(`Image resized: ${srcW}x${srcH} → ${w}x${h}, size: ${Math.round(url.length/1024)}KB`);
+          callback(url);
+        };
+        if (source instanceof HTMLVideoElement) {
+          doResize(source, source.videoWidth, source.videoHeight);
+        } else {
+          img.onload = () => doResize(img, img.width, img.height);
+          img.src = source;
+        }
       };
 
       const capture = () => {
-        const v=videoRef.current,c=canvasRef.current; if(!v||!c) return;
-        c.width=v.videoWidth; c.height=v.videoHeight;
-        c.getContext("2d").drawImage(v,0,0);
-        const url=c.toDataURL("image/jpeg",0.9);
-        setCapturedImg(url); stopCam(); analyze(url.split(",")[1]);
+        const v=videoRef.current; if(!v) return;
+        stopCam();
+        resizeImage(v, (url) => {
+          setCapturedImg(url);
+          analyze(url.split(",")[1]);
+        });
       };
-      const onFile = (e) => { const f=e.target.files?.[0]; if(!f)return; const rd=new FileReader(); rd.onload=()=>{const u=rd.result;setCapturedImg(u);analyze(u.split(",")[1]);}; rd.readAsDataURL(f); e.target.value=""; };
+
+      const onFile = (e) => {
+        const f=e.target.files?.[0]; if(!f)return;
+        const rd=new FileReader();
+        rd.onload=()=>{
+          resizeImage(rd.result, (url) => {
+            setCapturedImg(url);
+            analyze(url.split(",")[1]);
+          });
+        };
+        rd.readAsDataURL(f); e.target.value="";
+      };
       const reset = () => { stopCam(); setView("home"); setAnalysis(null); setError(null); setManualText(""); setCapturedImg(null); setCompare([]); };
 
       const rate = (id,s) => { const nr={...ratings}; if(!nr[id]) nr[id]={t:0,c:0}; nr[id]={t:nr[id].t+s,c:nr[id].c+1}; setRatings(nr); ls.set("il-ratings",nr); };
@@ -454,7 +526,7 @@ Categories for cleaning: surfactant|solvent|builder|bleach|enzyme|fragrance|pres
 
                 {/* Tabs */}
                 <div style={{display:"flex",gap:"3px",background:"#0c0c16",borderRadius:"10px",padding:"3px"}}>
-                  {[["overview","Overview"],["ingredients","Ingredients"],["extras","More"]].map(([k,l])=><button key={k} onClick={()=>setTab(k)} style={{flex:1,background:tab===k?"#1e1e30":"transparent",borderRadius:"8px",padding:"9px 4px",color:tab===k?"var(--text)":"var(--muted)",fontSize:"12px",fontWeight:tab===k?700:500,transition:"all .15s"}}>{l}</button>)}
+                  {[["overview","Overview"],["ingredients","Ingredients"],["extras","Swaps 🔄"]].map(([k,l])=><button key={k} onClick={()=>setTab(k)} style={{flex:1,background:tab===k?"#1e1e30":"transparent",borderRadius:"8px",padding:"9px 4px",color:tab===k?"var(--text)":"var(--muted)",fontSize:"12px",fontWeight:tab===k?700:500,transition:"all .15s"}}>{l}</button>)}
                 </div>
 
                 {/* OVERVIEW TAB */}
