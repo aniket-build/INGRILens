@@ -1,0 +1,548 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no"/>
+  <meta name="theme-color" content="#08080e"/>
+  <meta name="apple-mobile-web-app-capable" content="yes"/>
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent"/>
+  <meta name="apple-mobile-web-app-title" content="Ingredient Lens"/>
+  <meta name="description" content="Scan ingredient labels on food, cosmetics, and cleaning products. Get instant health analysis, skin impact, and environmental scores."/>
+  <link rel="manifest" href="/manifest.json"/>
+  <link rel="apple-touch-icon" href="/icons/icon-192.png"/>
+  <link rel="icon" type="image/png" href="/icons/icon-192.png"/>
+  <title>Ingredient Lens — Know What's In Your Products</title>
+  <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600;700;800&display=swap" rel="stylesheet"/>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    :root {
+      --bg: #08080e; --surface: #111120; --surface2: #1a1a2e; --border: #1e1e3a;
+      --text: #f0f0f5; --text2: #b8b8c8; --muted: #6b7280; --dim: #444;
+      --green: #34d399; --pink: #f472b6; --blue: #38bdf8; --red: #f87171;
+      --yellow: #fbbf24; --purple: #a78bfa; --indigo: #a5b4fc;
+      --font: 'DM Sans', sans-serif; --mono: 'JetBrains Mono', monospace;
+    }
+    html, body { background: var(--bg); color: var(--text); font-family: var(--font); min-height: 100vh; -webkit-font-smoothing: antialiased; overflow-x: hidden; }
+    body { max-width: 480px; margin: 0 auto; }
+    button { font-family: var(--font); cursor: pointer; border: none; }
+    textarea { font-family: var(--font); }
+
+    @keyframes spin { to { transform: rotate(360deg); } }
+    @keyframes fadeUp { from { opacity: 0; transform: translateY(14px); } to { opacity: 1; transform: translateY(0); } }
+    @keyframes pulse { 0%, 100% { opacity: 0.5; } 50% { opacity: 1; } }
+    .fade-up { animation: fadeUp 0.35s ease forwards; }
+
+    /* Install Banner */
+    .install-banner {
+      background: linear-gradient(135deg, #34d39918, #f472b618);
+      border: 1px solid #34d39930; border-radius: 13px; padding: 14px 16px;
+      display: none; align-items: center; gap: 12px; margin-bottom: 14px;
+    }
+    .install-banner.show { display: flex; }
+    .install-banner p { color: var(--text2); font-size: 12.5px; flex: 1; line-height: 1.5; }
+    .install-banner button {
+      background: var(--green); color: #fff; border-radius: 9px;
+      padding: 8px 16px; font-size: 12px; font-weight: 700; flex-shrink: 0;
+    }
+    .install-banner .dismiss { background: transparent; color: var(--muted); padding: 4px 8px; font-size: 18px; }
+  </style>
+</head>
+<body>
+  <div id="app"></div>
+
+  <script>
+    // ─── SERVICE WORKER ─────────────────────────────
+    if ('serviceWorker' in navigator) {
+      window.addEventListener('load', () => {
+        navigator.serviceWorker.register('/sw.js').catch(() => {});
+      });
+    }
+
+    // ─── PWA INSTALL PROMPT ─────────────────────────
+    let deferredPrompt = null;
+    window.addEventListener('beforeinstallprompt', (e) => {
+      e.preventDefault();
+      deferredPrompt = e;
+      // The app will pick this up
+      window.dispatchEvent(new Event('pwaInstallReady'));
+    });
+  </script>
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.9/babel.min.js"></script>
+
+  <script type="text/babel">
+    const { useState, useRef, useCallback, useEffect } = React;
+
+    // ─── API CONFIG ─────────────────────────────────
+    // Uses Netlify's secure serverless function — your API key stays hidden
+    const API_URL = "/.netlify/functions/analyze";
+
+    const ANALYSIS_PROMPT = `You are a world-class expert in food science, dermatology, cosmetic chemistry, and environmental toxicology. Analyze an ingredient list from a product.
+
+STEP 1: Detect the product type: "food", "cosmetic", or "cleaning".
+STEP 2: Analyze ALL ingredients.
+
+Return ONLY valid JSON (no markdown, no backticks):
+{
+  "product_type": "food"|"cosmetic"|"cleaning",
+  "product_name_guess": "best guess product name",
+  "product_summary": "2-3 sentence summary",
+  "health_score": <1-10>,
+  "ingredients": [{"name":"...","category":"...","rating":"good|neutral|caution|bad","detail":"..."}],
+  "emulsifiers_stabilizers": [{"name":"...","type":"emulsifier|stabilizer","detail":"..."}],
+  "health_concerns": ["..."],
+  "health_benefits": ["..."],
+  "skin_impact": {"skin_types_suited":[],"skin_types_avoid":[],"irritation_risk":"low|moderate|high","comedogenic_risk":"low|moderate|high","allergen_flags":[],"long_term_concerns":[],"beneficial_actives":[]},
+  "harsh_chemicals": [{"name":"...","concern":"..."}],
+  "environmental_impact": {"eco_score":<1-10>,"biodegradability":"high|moderate|low","aquatic_toxicity_risk":"low|moderate|high","voc_level":"none|low|moderate|high","voc_details":"...","phosphate_free":true|false,"microplastic_risk":"none|low|moderate|high","packaging_note":"..."},
+  "hazardous_chemicals": [{"name":"...","hazard_type":"irritant|corrosive|toxic|carcinogen|endocrine_disruptor|environmental_pollutant","detail":"..."}],
+  "safety_precautions": ["..."],
+  "better_alternatives": [{"instead_of":"ingredient","use":"safer alternative","why":"reason"}],
+  "recommendation": "2-3 sentence verdict"
+}
+Include only sections relevant to the product_type. Always include better_alternatives with 2-5 suggestions.
+Categories for food: natural|preservative|emulsifier|stabilizer|colorant|sweetener|flavor_enhancer|thickener|antioxidant|acidity_regulator|other_additive|nutrient
+Categories for cosmetic: active_ingredient|moisturizer|emollient|surfactant|preservative|fragrance|colorant|emulsifier|thickener|solvent|pH_adjuster|UV_filter|antioxidant|exfoliant|other
+Categories for cleaning: surfactant|solvent|builder|bleach|enzyme|fragrance|preservative|colorant|pH_adjuster|chelating_agent|antimicrobial|thickener|propellant|other`;
+
+    // ─── CONSTANTS ──────────────────────────────────
+    const RC = {
+      good: { bg:"#0a2e1a", text:"#34d399", border:"#166534", icon:"✓" },
+      neutral: { bg:"#1a1a2e", text:"#a5b4fc", border:"#3730a3", icon:"○" },
+      caution: { bg:"#2e1f0a", text:"#fbbf24", border:"#92400e", icon:"⚠" },
+      bad: { bg:"#2e0a0a", text:"#f87171", border:"#991b1b", icon:"✕" },
+    };
+    const CI = {
+      natural:"🌿",preservative:"🧪",emulsifier:"🔗",stabilizer:"⚓",colorant:"🎨",sweetener:"🍬",
+      flavor_enhancer:"👅",thickener:"🫗",antioxidant:"🛡️",acidity_regulator:"⚗️",other_additive:"📦",
+      nutrient:"💊",active_ingredient:"⚡",moisturizer:"💧",emollient:"🧴",surfactant:"🫧",
+      fragrance:"🌸",solvent:"💨",pH_adjuster:"⚖️",UV_filter:"☀️",exfoliant:"✨",builder:"🧱",
+      bleach:"🔆",enzyme:"🦠",chelating_agent:"🔩",antimicrobial:"🦠",propellant:"🚀",other:"•",
+    };
+    const TH = {
+      food: { accent:"#34d399", grad:"linear-gradient(135deg,#34d399,#059669)", icon:"🍽️", label:"Food" },
+      cosmetic: { accent:"#f472b6", grad:"linear-gradient(135deg,#f472b6,#db2777)", icon:"✨", label:"Cosmetic" },
+      cleaning: { accent:"#38bdf8", grad:"linear-gradient(135deg,#38bdf8,#0284c7)", icon:"🧹", label:"Cleaning" },
+    };
+
+    // ─── LOCAL STORAGE ──────────────────────────────
+    const ls = {
+      get: (k,d=[]) => { try { return JSON.parse(localStorage.getItem(k))||d; } catch { return d; } },
+      set: (k,v) => { try { localStorage.setItem(k, JSON.stringify(v)); } catch {} },
+    };
+
+    // ─── COMPONENTS ─────────────────────────────────
+    const Gauge = ({ score, label, color }) => {
+      const ang = (score/10)*180;
+      const dl = score>=7?"Good":score>=4?"Fair":"Poor";
+      const id = label.replace(/\s/g,"");
+      return (
+        <div style={{ display:"flex",flexDirection:"column",alignItems:"center",margin:"6px 0" }}>
+          <svg viewBox="0 0 200 120" width="180" height="108">
+            <defs><linearGradient id={`g${id}`} x1="0%" x2="100%"><stop offset="0%" stopColor="#f87171"/><stop offset="50%" stopColor="#fbbf24"/><stop offset="100%" stopColor="#34d399"/></linearGradient></defs>
+            <path d="M 20 100 A 80 80 0 0 1 180 100" fill="none" stroke="#1e1e2e" strokeWidth="13" strokeLinecap="round"/>
+            <path d="M 20 100 A 80 80 0 0 1 180 100" fill="none" stroke={`url(#g${id})`} strokeWidth="13" strokeLinecap="round" opacity="0.2"/>
+            <line x1="100" y1="100" x2={100+60*Math.cos(Math.PI-(ang*Math.PI)/180)} y2={100-60*Math.sin(Math.PI-(ang*Math.PI)/180)} stroke={color} strokeWidth="2.5" strokeLinecap="round"/>
+            <circle cx="100" cy="100" r="5" fill={color}/>
+            <text x="100" y="80" textAnchor="middle" fill={color} fontSize="24" fontWeight="800" fontFamily="var(--mono)">{score}</text>
+            <text x="100" y="115" textAnchor="middle" fill="#9ca3af" fontSize="10" fontFamily="var(--font)">{dl}</text>
+          </svg>
+          <span style={{ fontSize:"9px",color:"var(--muted)",textTransform:"uppercase",letterSpacing:"0.1em",fontFamily:"var(--mono)",marginTop:"-2px" }}>{label}</span>
+        </div>
+      );
+    };
+
+    const Sec = ({ icon, title, color, children }) => (
+      <div><h3 style={{ color,fontSize:"11px",fontWeight:700,textTransform:"uppercase",letterSpacing:"0.1em",margin:"0 0 9px",fontFamily:"var(--mono)" }}>{icon} {title}</h3>{children}</div>
+    );
+
+    const Tags = ({ items, color }) => !items?.length ? null : (
+      <div style={{ display:"flex",flexWrap:"wrap",gap:"5px" }}>
+        {items.map((t,i)=><span key={i} style={{ background:`${color}14`,color,border:`1px solid ${color}28`,fontSize:"11px",padding:"4px 10px",borderRadius:"18px",lineHeight:1.3 }}>{t}</span>)}
+      </div>
+    );
+
+    const Metric = ({ label, value }) => {
+      const vc={good:"#34d399",high:"#f87171",moderate:"#fbbf24",low:"#34d399",none:"#34d399",true:"#34d399",false:"#f87171"};
+      const dv = typeof value==="boolean"?(value?"Yes":"No"):value;
+      return (
+        <div style={{ display:"flex",justifyContent:"space-between",padding:"8px 0",borderBottom:"1px solid #1a1a2a" }}>
+          <span style={{ color:"var(--muted)",fontSize:"12px" }}>{label}</span>
+          <span style={{ color:vc[String(value).toLowerCase()]||"var(--indigo)",fontSize:"12px",fontWeight:700,fontFamily:"var(--mono)",textTransform:"capitalize" }}>{dv}</span>
+        </div>
+      );
+    };
+
+    const IngCard = ({ ing }) => {
+      const r = RC[ing.rating]||RC.neutral;
+      return (
+        <div style={{ background:r.bg,border:`1px solid ${r.border}`,borderRadius:"9px",padding:"10px 12px",display:"flex",gap:"9px" }}>
+          <span style={{ fontSize:"16px",flexShrink:0,marginTop:"1px" }}>{CI[ing.category]||"•"}</span>
+          <div style={{ flex:1,minWidth:0 }}>
+            <div style={{ display:"flex",alignItems:"center",gap:"6px",flexWrap:"wrap" }}>
+              <span style={{ color:"var(--text)",fontWeight:600,fontSize:"13px" }}>{ing.name}</span>
+              <span style={{ background:`${r.text}18`,color:r.text,fontSize:"9px",fontWeight:700,padding:"2px 6px",borderRadius:"16px",textTransform:"uppercase",fontFamily:"var(--mono)" }}>{r.icon} {ing.rating}</span>
+              <span style={{ color:"var(--dim)",fontSize:"9px",textTransform:"uppercase",fontFamily:"var(--mono)" }}>{ing.category?.replace(/_/g," ")}</span>
+            </div>
+            <p style={{ color:"var(--muted)",fontSize:"11.5px",margin:"3px 0 0",lineHeight:1.45 }}>{ing.detail}</p>
+          </div>
+        </div>
+      );
+    };
+
+    const Stars = ({ rating, onRate, size=22 }) => (
+      <div style={{ display:"flex",gap:"2px" }}>
+        {[1,2,3,4,5].map(s=><span key={s} onClick={()=>onRate?.(s)} style={{ fontSize:`${size}px`,cursor:onRate?"pointer":"default",color:s<=rating?"#fbbf24":"#2a2a3e",transition:"color .15s" }}>★</span>)}
+      </div>
+    );
+
+    const ShareCard = ({ a }) => {
+      const t = TH[a.product_type]||TH.food;
+      const bad=a.ingredients?.filter(i=>i.rating==="bad").length||0;
+      const caut=a.ingredients?.filter(i=>i.rating==="caution").length||0;
+      const good=a.ingredients?.filter(i=>i.rating==="good").length||0;
+      const [copied,setCopied]=useState(false);
+
+      const copy = () => {
+        const txt=`🔍 INGREDIENT LENS REPORT\n━━━━━━━━━━━━━━━━━━━━\n${t.icon} ${a.product_name_guess}\nType: ${t.label} | Score: ${a.health_score}/10 ${a.health_score>=7?"✅":a.health_score>=4?"⚠️":"🚨"}\n\n📊 ✅ ${good} Good · ⚠️ ${caut} Caution · ❌ ${bad} Bad\n${a.health_concerns?.length?`\n🚨 ${a.health_concerns.join(", ")}`:""}${a.skin_impact?`\n🧬 Irritation: ${a.skin_impact.irritation_risk}`:""}${a.environmental_impact?`\n🌍 Eco: ${a.environmental_impact.eco_score}/10 | VOC: ${a.environmental_impact.voc_level}`:""}\n\n💡 ${a.recommendation}\n\nScanned with Ingredient Lens 🔬`;
+        navigator.clipboard.writeText(txt).then(()=>{setCopied(true);setTimeout(()=>setCopied(false),2000);}).catch(()=>{});
+        // Also try native share
+        if (navigator.share) { navigator.share({ title:"Ingredient Lens Report", text:txt }).catch(()=>{}); }
+      };
+
+      return (
+        <div style={{ background:`linear-gradient(145deg,#111125,#0c0c1a)`,border:`1px solid ${t.accent}30`,borderRadius:"13px",padding:"16px",position:"relative",overflow:"hidden" }}>
+          <div style={{ display:"flex",justifyContent:"space-between",alignItems:"flex-start",marginBottom:"10px" }}>
+            <div><p style={{ color:t.accent,fontSize:"13px",fontWeight:700,margin:0 }}>{a.product_name_guess}</p><p style={{ color:"var(--dim)",fontSize:"9px",margin:"2px 0 0",fontFamily:"var(--mono)",textTransform:"uppercase" }}>{t.label}</p></div>
+            <div style={{ background:a.health_score>=7?"#0a2e1a":a.health_score>=4?"#2e1f0a":"#2e0a0a",borderRadius:"9px",padding:"5px 10px" }}><span style={{ color:a.health_score>=7?"#34d399":a.health_score>=4?"#fbbf24":"#f87171",fontSize:"18px",fontWeight:800,fontFamily:"var(--mono)" }}>{a.health_score}</span><span style={{ color:"var(--dim)",fontSize:"9px" }}>/10</span></div>
+          </div>
+          <div style={{ display:"flex",gap:"10px",marginBottom:"12px" }}>
+            <span style={{ fontSize:"12px" }}><span style={{ color:"#34d399",fontWeight:700,fontFamily:"var(--mono)" }}>{good}</span> <span style={{ color:"var(--dim)",fontSize:"10px" }}>good</span></span>
+            <span style={{ fontSize:"12px" }}><span style={{ color:"#fbbf24",fontWeight:700,fontFamily:"var(--mono)" }}>{caut}</span> <span style={{ color:"var(--dim)",fontSize:"10px" }}>caution</span></span>
+            <span style={{ fontSize:"12px" }}><span style={{ color:"#f87171",fontWeight:700,fontFamily:"var(--mono)" }}>{bad}</span> <span style={{ color:"var(--dim)",fontSize:"10px" }}>bad</span></span>
+          </div>
+          <p style={{ color:"var(--muted)",fontSize:"11px",lineHeight:1.5,margin:"0 0 12px" }}>{a.recommendation}</p>
+          <button onClick={copy} style={{ width:"100%",background:copied?"#166534":t.grad,borderRadius:"9px",padding:"11px",color:"#fff",fontSize:"12.5px",fontWeight:700,display:"flex",alignItems:"center",justifyContent:"center",gap:"6px" }}>
+            {copied?"✓ Copied!":"📤 Share Report Card"}
+          </button>
+        </div>
+      );
+    };
+
+    // ─── COMPARE ────────────────────────────────────
+    const Compare = ({ items, onClose }) => {
+      if(items.length<2) return null;
+      const Col = ({item}) => {
+        const t=TH[item.product_type]||TH.food;
+        const bad=item.ingredients?.filter(i=>i.rating==="bad").length||0;
+        const good=item.ingredients?.filter(i=>i.rating==="good").length||0;
+        return (
+          <div style={{ flex:1,background:"var(--surface)",border:`1px solid ${t.accent}20`,borderRadius:"11px",padding:"12px",minWidth:0 }}>
+            <p style={{ color:t.accent,fontSize:"11.5px",fontWeight:700,margin:"0 0 2px",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap" }}>{item.product_name_guess}</p>
+            <p style={{ color:"var(--dim)",fontSize:"9px",fontFamily:"var(--mono)",margin:"0 0 6px" }}>{t.label}</p>
+            <div style={{ textAlign:"center",margin:"2px 0 8px" }}>
+              <span style={{ color:item.health_score>=7?"#34d399":item.health_score>=4?"#fbbf24":"#f87171",fontSize:"28px",fontWeight:800,fontFamily:"var(--mono)" }}>{item.health_score}</span><span style={{ color:"var(--dim)",fontSize:"10px" }}>/10</span>
+            </div>
+            <div style={{ display:"flex",justifyContent:"space-between",padding:"4px 0",borderBottom:"1px solid #1a1a2a" }}><span style={{ color:"var(--muted)",fontSize:"10px" }}>Good</span><span style={{ color:"#34d399",fontSize:"10px",fontWeight:700,fontFamily:"var(--mono)" }}>{good}</span></div>
+            <div style={{ display:"flex",justifyContent:"space-between",padding:"4px 0",borderBottom:"1px solid #1a1a2a" }}><span style={{ color:"var(--muted)",fontSize:"10px" }}>Bad</span><span style={{ color:"#f87171",fontSize:"10px",fontWeight:700,fontFamily:"var(--mono)" }}>{bad}</span></div>
+            <div style={{ display:"flex",justifyContent:"space-between",padding:"4px 0" }}><span style={{ color:"var(--muted)",fontSize:"10px" }}>Total</span><span style={{ color:"var(--indigo)",fontSize:"10px",fontWeight:700,fontFamily:"var(--mono)" }}>{item.ingredients?.length||0}</span></div>
+          </div>
+        );
+      };
+      const [a,b]=items;
+      return (
+        <div className="fade-up" style={{ display:"flex",flexDirection:"column",gap:"12px" }}>
+          <div style={{ display:"flex",justifyContent:"space-between",alignItems:"center" }}><h3 style={{ color:"var(--text)",fontSize:"15px",fontWeight:700 }}>⚖️ Compare</h3><button onClick={onClose} style={{ background:"var(--surface)",border:"1px solid var(--border)",borderRadius:"8px",padding:"5px 10px",color:"var(--muted)",fontSize:"11px" }}>✕</button></div>
+          <div style={{ display:"flex",gap:"8px" }}><Col item={a}/><Col item={b}/></div>
+          <div style={{ background:"var(--surface)",borderRadius:"11px",padding:"12px",border:"1px solid var(--border)" }}>
+            <p style={{ color:"#60a5fa",fontSize:"10px",fontWeight:700,textTransform:"uppercase",letterSpacing:"0.08em",margin:"0 0 5px",fontFamily:"var(--mono)" }}>💡 Verdict</p>
+            <p style={{ color:"var(--text2)",fontSize:"12px",lineHeight:1.5,margin:0 }}>
+              {a.health_score>b.health_score?`${a.product_name_guess} is the better choice (${a.health_score} vs ${b.health_score}/10) with fewer problematic ingredients.`:a.health_score<b.health_score?`${b.product_name_guess} is the better choice (${b.health_score} vs ${a.health_score}/10) with fewer problematic ingredients.`:`Both score equally (${a.health_score}/10). Compare specific ingredient concerns to decide.`}
+            </p>
+          </div>
+        </div>
+      );
+    };
+
+    // ─── MAIN APP ───────────────────────────────────
+    function App() {
+      const [view, setView] = useState("home");
+      const [analysis, setAnalysis] = useState(null);
+      const [error, setError] = useState(null);
+      const [manualText, setManualText] = useState("");
+      const [capturedImg, setCapturedImg] = useState(null);
+      const [history, setHistory] = useState([]);
+      const [ratings, setRatings] = useState({});
+      const [compare, setCompare] = useState([]);
+      const [tab, setTab] = useState("overview");
+      const [canInstall, setCanInstall] = useState(false);
+      const videoRef = useRef(null);
+      const canvasRef = useRef(null);
+      const streamRef = useRef(null);
+      const fileRef = useRef(null);
+
+      useEffect(() => {
+        setHistory(ls.get("il-history",[]));
+        setRatings(ls.get("il-ratings",{}));
+        const h = () => setCanInstall(true);
+        window.addEventListener("pwaInstallReady", h);
+        return () => window.removeEventListener("pwaInstallReady", h);
+      }, []);
+
+      const installPWA = async () => {
+        if (!window.deferredPrompt) return;
+        window.deferredPrompt.prompt();
+        const r = await window.deferredPrompt.userChoice;
+        if (r.outcome==="accepted") setCanInstall(false);
+        window.deferredPrompt = null;
+      };
+
+      const stopCam = useCallback(() => { if(streamRef.current){streamRef.current.getTracks().forEach(t=>t.stop());streamRef.current=null;} },[]);
+      const startCam = useCallback(async () => {
+        setError(null); setView("camera");
+        try {
+          const s = await navigator.mediaDevices.getUserMedia({video:{facingMode:"environment",width:{ideal:1920},height:{ideal:1080}}});
+          streamRef.current=s; if(videoRef.current) videoRef.current.srcObject=s;
+        } catch { setError("Camera denied. Use upload or manual entry."); setView("home"); }
+      },[]);
+      useEffect(()=>()=>stopCam(),[stopCam]);
+
+      const analyze = async (content) => {
+        setView("analyzing"); setError(null);
+        try {
+          const msgs=[{role:"user",content:typeof content==="string"
+            ?`Ingredient list:\n\n${content}\n\nDetect type and analyze.`
+            :[{type:"image",source:{type:"base64",media_type:"image/jpeg",data:content}},{type:"text",text:"Photo of a product ingredient list. Detect type and analyze."}]
+          }];
+          const resp = await fetch(API_URL,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({model:"claude-sonnet-4-20250514",max_tokens:4096,system:ANALYSIS_PROMPT,messages:msgs})});
+          const data = await resp.json();
+          if(data.error) throw new Error(data.error.message);
+          const text = data.content?.map(c=>c.text||"").join("")||"";
+          const parsed = JSON.parse(text.replace(/```json|```/g,"").trim());
+          setAnalysis(parsed); setView("results"); setTab("overview");
+          const entry = {...parsed, id:Date.now(), scannedAt:new Date().toISOString()};
+          const nh = [entry,...history].slice(0,50);
+          setHistory(nh); ls.set("il-history",nh);
+        } catch(err) { setError(`Analysis failed: ${err.message}`); setView("home"); }
+      };
+
+      const capture = () => {
+        const v=videoRef.current,c=canvasRef.current; if(!v||!c) return;
+        c.width=v.videoWidth; c.height=v.videoHeight;
+        c.getContext("2d").drawImage(v,0,0);
+        const url=c.toDataURL("image/jpeg",0.9);
+        setCapturedImg(url); stopCam(); analyze(url.split(",")[1]);
+      };
+      const onFile = (e) => { const f=e.target.files?.[0]; if(!f)return; const rd=new FileReader(); rd.onload=()=>{const u=rd.result;setCapturedImg(u);analyze(u.split(",")[1]);}; rd.readAsDataURL(f); e.target.value=""; };
+      const reset = () => { stopCam(); setView("home"); setAnalysis(null); setError(null); setManualText(""); setCapturedImg(null); setCompare([]); };
+
+      const rate = (id,s) => { const nr={...ratings}; if(!nr[id]) nr[id]={t:0,c:0}; nr[id]={t:nr[id].t+s,c:nr[id].c+1}; setRatings(nr); ls.set("il-ratings",nr); };
+      const avg = (id) => { const r=ratings[id]; return r?.c ? Math.round((r.t/r.c)*10)/10 : 0; };
+      const togComp = (item) => { if(compare.find(c=>c.id===item.id)) setCompare(compare.filter(c=>c.id!==item.id)); else if(compare.length<2) setCompare([...compare,item]); };
+
+      const a = analysis;
+      const th = a ? TH[a.product_type]||TH.food : TH.food;
+
+      return (
+        <div style={{ padding:"0" }}>
+          <canvas ref={canvasRef} style={{display:"none"}}/>
+          <input ref={fileRef} type="file" accept="image/*" style={{display:"none"}} onChange={onFile}/>
+
+          {/* NAV */}
+          <div style={{padding:"16px 18px 0",display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+            <div onClick={reset} style={{cursor:"pointer"}}>
+              <h1 style={{margin:0,fontSize:"16px",fontWeight:800,fontFamily:"var(--mono)",background:"linear-gradient(135deg,#34d399,#f472b6 45%,#38bdf8 85%)",WebkitBackgroundClip:"text",WebkitTextFillColor:"transparent"}}>INGREDIENT LENS</h1>
+            </div>
+            <button onClick={()=>{setView("history");setCompare([]);}} style={{background:view==="history"?"#1e1e3e":"#14141e",border:"1px solid var(--border)",borderRadius:"9px",padding:"7px 12px",color:view==="history"?"var(--indigo)":"var(--muted)",fontSize:"12px",fontFamily:"var(--mono)",fontWeight:600}}>📜 {history.length}</button>
+          </div>
+
+          <div style={{padding:"14px 18px 32px"}}>
+            {/* Install Banner */}
+            {canInstall && view==="home" && (
+              <div className="install-banner show">
+                <p><strong style={{color:"var(--green)"}}>Install Ingredient Lens</strong> on your home screen for quick access</p>
+                <button onClick={installPWA}>Install</button>
+                <button className="dismiss" onClick={()=>setCanInstall(false)}>✕</button>
+              </div>
+            )}
+
+            {error && <div className="fade-up" style={{background:"#2e0a0a",border:"1px solid #991b1b",borderRadius:"11px",padding:"12px",marginBottom:"12px",color:"var(--red)",fontSize:"12.5px"}}>{error}</div>}
+
+            {/* ═══ HOME ═══ */}
+            {view==="home" && (
+              <div className="fade-up" style={{display:"flex",flexDirection:"column",gap:"10px",marginTop:"10px"}}>
+                <div style={{background:"linear-gradient(145deg,var(--surface),#0a0a18)",border:"1px solid var(--border)",borderRadius:"18px",padding:"28px 20px",textAlign:"center",marginBottom:"2px"}}>
+                  <div style={{fontSize:"44px",marginBottom:"8px"}}>🔍</div>
+                  <h2 style={{margin:"0 0 6px",fontSize:"17px",fontWeight:700}}>Universal Label Scanner</h2>
+                  <p style={{margin:0,color:"var(--muted)",fontSize:"12.5px",lineHeight:1.6}}>Scan <b style={{color:"#34d399"}}>food</b>, <b style={{color:"#f472b6"}}>cosmetics</b>, or <b style={{color:"#38bdf8"}}>cleaning</b> product labels. Get health analysis, skin impact, eco scores & safer alternatives.</p>
+                </div>
+                <div style={{display:"flex",gap:"6px",justifyContent:"center",marginBottom:"2px"}}>
+                  {Object.entries(TH).map(([k,t])=><div key={k} style={{background:`${t.accent}0c`,border:`1px solid ${t.accent}22`,borderRadius:"16px",padding:"4px 11px",display:"flex",alignItems:"center",gap:"4px"}}><span style={{fontSize:"12px"}}>{t.icon}</span><span style={{color:t.accent,fontSize:"10px",fontWeight:600,fontFamily:"var(--mono)"}}>{t.label}</span></div>)}
+                </div>
+                <button onClick={startCam} style={{background:"linear-gradient(135deg,#34d399,#059669)",borderRadius:"13px",padding:"16px",color:"#fff",fontSize:"15px",fontWeight:700,display:"flex",alignItems:"center",justifyContent:"center",gap:"8px",boxShadow:"0 4px 20px #34d39930"}}>📷 Open Camera & Scan</button>
+                <button onClick={()=>fileRef.current?.click()} style={{background:"var(--surface)",border:"1px solid var(--border)",borderRadius:"13px",padding:"14px",color:"var(--indigo)",fontSize:"14px",fontWeight:600,display:"flex",alignItems:"center",justifyContent:"center",gap:"8px"}}>🖼️ Upload Photo</button>
+                <button onClick={()=>setView("manual")} style={{background:"transparent",border:"1px solid #1a1a28",borderRadius:"13px",padding:"14px",color:"var(--muted)",fontSize:"13px",fontWeight:500}}>⌨️ Type Ingredients Manually</button>
+                {history.length>0 && (
+                  <div style={{marginTop:"4px"}}>
+                    <p style={{color:"var(--muted)",fontSize:"10px",fontWeight:600,textTransform:"uppercase",letterSpacing:"0.1em",margin:"0 0 7px",fontFamily:"var(--mono)"}}>Recent Scans</p>
+                    <div style={{display:"flex",flexDirection:"column",gap:"5px"}}>
+                      {history.slice(0,3).map(h=>{const ht=TH[h.product_type]||TH.food; return (
+                        <div key={h.id} onClick={()=>{setAnalysis(h);setView("results");setTab("overview");}} style={{background:"var(--surface)",border:"1px solid var(--border)",borderRadius:"10px",padding:"10px 12px",cursor:"pointer",display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+                          <div style={{display:"flex",alignItems:"center",gap:"7px",minWidth:0}}><span style={{fontSize:"15px"}}>{ht.icon}</span><div style={{minWidth:0}}><p style={{color:"var(--text)",fontSize:"12.5px",fontWeight:600,margin:0,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{h.product_name_guess}</p><p style={{color:"var(--dim)",fontSize:"9.5px",margin:"1px 0 0",fontFamily:"var(--mono)"}}>{new Date(h.scannedAt).toLocaleDateString()}</p></div></div>
+                          <span style={{color:h.health_score>=7?"#34d399":h.health_score>=4?"#fbbf24":"#f87171",fontSize:"15px",fontWeight:800,fontFamily:"var(--mono)",flexShrink:0}}>{h.health_score}/10</span>
+                        </div>
+                      );})}
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* ═══ CAMERA ═══ */}
+            {view==="camera" && (
+              <div className="fade-up" style={{display:"flex",flexDirection:"column",gap:"10px",marginTop:"4px"}}>
+                <div style={{borderRadius:"14px",overflow:"hidden",border:"2px solid #34d399",position:"relative",background:"#000"}}>
+                  <video ref={videoRef} autoPlay playsInline muted style={{width:"100%",display:"block",minHeight:"280px"}}/>
+                  <div style={{position:"absolute",inset:"18px",border:"2px dashed #34d39945",borderRadius:"8px",pointerEvents:"none"}}/>
+                  <div style={{position:"absolute",bottom:"8px",left:"50%",transform:"translateX(-50%)",background:"#000a",color:"#34d399",fontSize:"10px",padding:"4px 12px",borderRadius:"16px",fontFamily:"var(--mono)"}}>Align label</div>
+                </div>
+                <div style={{display:"flex",gap:"8px"}}>
+                  <button onClick={()=>{stopCam();setView("home")}} style={{flex:1,background:"var(--surface)",border:"1px solid var(--border)",borderRadius:"11px",padding:"13px",color:"var(--muted)",fontSize:"14px",fontWeight:600}}>Cancel</button>
+                  <button onClick={capture} style={{flex:2,background:"linear-gradient(135deg,#34d399,#059669)",borderRadius:"11px",padding:"13px",color:"#fff",fontSize:"14px",fontWeight:700,boxShadow:"0 4px 16px #34d39930"}}>📸 Capture</button>
+                </div>
+              </div>
+            )}
+
+            {/* ═══ MANUAL ═══ */}
+            {view==="manual" && (
+              <div className="fade-up" style={{display:"flex",flexDirection:"column",gap:"10px",marginTop:"4px"}}>
+                <p style={{color:"var(--muted)",fontSize:"12.5px"}}>Paste ingredient list from any product:</p>
+                <textarea value={manualText} onChange={e=>setManualText(e.target.value)} placeholder="e.g. Aqua, Glycerin, Cetearyl Alcohol, Sodium Lauryl Sulfate..." rows={7} style={{background:"var(--surface)",border:"1px solid var(--border)",borderRadius:"11px",padding:"13px",color:"var(--text)",fontSize:"13.5px",resize:"vertical",outline:"none",lineHeight:1.6}}/>
+                <div style={{display:"flex",gap:"8px"}}>
+                  <button onClick={()=>setView("home")} style={{flex:1,background:"var(--surface)",border:"1px solid var(--border)",borderRadius:"11px",padding:"13px",color:"var(--muted)",fontSize:"14px",fontWeight:600}}>Back</button>
+                  <button onClick={()=>{if(manualText.trim().length>=5)analyze(manualText.trim())}} disabled={manualText.trim().length<5} style={{flex:2,background:manualText.trim().length<5?"var(--surface)":"linear-gradient(135deg,#a78bfa,#7c3aed)",borderRadius:"11px",padding:"13px",color:"#fff",fontSize:"14px",fontWeight:700,opacity:manualText.trim().length<5?0.4:1,cursor:manualText.trim().length<5?"not-allowed":"pointer"}}>Analyze</button>
+                </div>
+              </div>
+            )}
+
+            {/* ═══ ANALYZING ═══ */}
+            {view==="analyzing" && (
+              <div style={{textAlign:"center",padding:"44px 16px"}}>
+                {capturedImg && <img src={capturedImg} alt="" style={{width:"100%",maxHeight:"130px",objectFit:"cover",borderRadius:"11px",marginBottom:"16px",opacity:0.4}}/>}
+                <div style={{width:"40px",height:"40px",border:"3px solid #1e1e2e",borderTop:"3px solid #34d399",borderRadius:"50%",margin:"0 auto 14px",animation:"spin .8s linear infinite"}}/>
+                <p style={{color:"var(--indigo)",fontSize:"14px",fontWeight:600}}>Analyzing product...</p>
+                <p style={{color:"var(--dim)",fontSize:"11px"}}>Detecting type · Evaluating ingredients · Finding alternatives</p>
+              </div>
+            )}
+
+            {/* ═══ RESULTS ═══ */}
+            {view==="results" && a && (
+              <div className="fade-up" style={{display:"flex",flexDirection:"column",gap:"14px",marginTop:"4px",paddingBottom:"24px"}}>
+                <div style={{display:"flex",justifyContent:"center"}}><div style={{background:`${th.accent}0e`,border:`1px solid ${th.accent}28`,borderRadius:"22px",padding:"5px 14px",display:"inline-flex",alignItems:"center",gap:"5px"}}><span style={{fontSize:"15px"}}>{th.icon}</span><span style={{color:th.accent,fontSize:"11.5px",fontWeight:700,fontFamily:"var(--mono)"}}>{th.label} Product</span></div></div>
+                <div style={{background:"linear-gradient(145deg,var(--surface),#0a0a18)",border:`1px solid ${th.accent}18`,borderRadius:"14px",padding:"16px"}}>
+                  {a.product_name_guess && <p style={{color:th.accent,fontSize:"14px",fontWeight:700,textAlign:"center",margin:"0 0 2px"}}>{a.product_name_guess}</p>}
+                  <Gauge score={a.health_score} label={a.product_type==="food"?"Health Score":"Safety Score"} color={th.accent}/>
+                  <p style={{color:"var(--text2)",fontSize:"12.5px",lineHeight:1.6,textAlign:"center",margin:0}}>{a.product_summary}</p>
+                  <div style={{display:"flex",alignItems:"center",justifyContent:"center",gap:"8px",marginTop:"10px",paddingTop:"8px",borderTop:"1px solid var(--border)"}}>
+                    <span style={{color:"var(--muted)",fontSize:"10.5px"}}>Rate:</span>
+                    <Stars rating={Math.round(avg(a.product_name_guess))} onRate={s=>rate(a.product_name_guess,s)}/>
+                    {ratings[a.product_name_guess]?.c>0 && <span style={{color:"var(--dim)",fontSize:"10px",fontFamily:"var(--mono)"}}>({avg(a.product_name_guess)})</span>}
+                  </div>
+                </div>
+
+                {/* Tabs */}
+                <div style={{display:"flex",gap:"3px",background:"#0c0c16",borderRadius:"10px",padding:"3px"}}>
+                  {[["overview","Overview"],["ingredients","Ingredients"],["extras","More"]].map(([k,l])=><button key={k} onClick={()=>setTab(k)} style={{flex:1,background:tab===k?"#1e1e30":"transparent",borderRadius:"8px",padding:"9px 4px",color:tab===k?"var(--text)":"var(--muted)",fontSize:"12px",fontWeight:tab===k?700:500,transition:"all .15s"}}>{l}</button>)}
+                </div>
+
+                {/* OVERVIEW TAB */}
+                {tab==="overview" && (<>
+                  {a.product_type==="food" && (<>
+                    {a.health_benefits?.length>0 && <Sec icon="✓" title="Benefits" color="#34d399"><Tags items={a.health_benefits} color="#34d399"/></Sec>}
+                    {a.health_concerns?.length>0 && <Sec icon="⚠" title="Concerns" color="#f87171"><Tags items={a.health_concerns} color="#f87171"/></Sec>}
+                    {a.emulsifiers_stabilizers?.length>0 && <Sec icon="🔬" title="Emulsifiers & Stabilizers" color="#c4b5fd"><div style={{display:"flex",flexDirection:"column",gap:"6px"}}>{a.emulsifiers_stabilizers.map((it,i)=><div key={i} style={{background:"#1a1525",border:"1px solid #2d2640",borderRadius:"9px",padding:"10px 12px"}}><div style={{display:"flex",alignItems:"center",gap:"6px",marginBottom:"3px"}}><span style={{fontSize:"14px"}}>🔬</span><span style={{color:"#c4b5fd",fontWeight:700,fontSize:"13px"}}>{it.name}</span><span style={{background:"#c4b5fd18",color:"#c4b5fd",fontSize:"9px",fontWeight:600,padding:"2px 6px",borderRadius:"14px",fontFamily:"var(--mono)",textTransform:"uppercase"}}>{it.type}</span></div><p style={{color:"var(--muted)",fontSize:"11.5px",margin:0,lineHeight:1.45}}>{it.detail}</p></div>)}</div></Sec>}
+                  </>)}
+                  {a.product_type==="cosmetic" && (<>
+                    {a.skin_impact && (
+                      <div style={{background:"#170e1e",border:"1px solid #301840",borderRadius:"13px",padding:"14px"}}>
+                        <Sec icon="🧬" title="Skin Impact" color="#f472b6">
+                          <Metric label="Irritation Risk" value={a.skin_impact.irritation_risk}/>
+                          <Metric label="Comedogenic Risk" value={a.skin_impact.comedogenic_risk}/>
+                          {a.skin_impact.skin_types_suited?.length>0 && <div style={{marginTop:"8px"}}><p style={{color:"var(--dim)",fontSize:"9.5px",fontWeight:600,textTransform:"uppercase",letterSpacing:"0.07em",marginBottom:"5px",fontFamily:"var(--mono)"}}>Suited for</p><Tags items={a.skin_impact.skin_types_suited} color="#34d399"/></div>}
+                          {a.skin_impact.skin_types_avoid?.length>0 && <div style={{marginTop:"8px"}}><p style={{color:"var(--dim)",fontSize:"9.5px",fontWeight:600,textTransform:"uppercase",letterSpacing:"0.07em",marginBottom:"5px",fontFamily:"var(--mono)"}}>Avoid if</p><Tags items={a.skin_impact.skin_types_avoid} color="#f87171"/></div>}
+                          {a.skin_impact.allergen_flags?.length>0 && <div style={{marginTop:"8px"}}><p style={{color:"var(--dim)",fontSize:"9.5px",fontWeight:600,textTransform:"uppercase",letterSpacing:"0.07em",marginBottom:"5px",fontFamily:"var(--mono)"}}>Allergens</p><Tags items={a.skin_impact.allergen_flags} color="#fbbf24"/></div>}
+                          {a.skin_impact.beneficial_actives?.length>0 && <div style={{marginTop:"8px"}}><p style={{color:"var(--dim)",fontSize:"9.5px",fontWeight:600,textTransform:"uppercase",letterSpacing:"0.07em",marginBottom:"5px",fontFamily:"var(--mono)"}}>Beneficial Actives</p><Tags items={a.skin_impact.beneficial_actives} color="#34d399"/></div>}
+                          {a.skin_impact.long_term_concerns?.length>0 && <div style={{marginTop:"8px"}}><p style={{color:"var(--dim)",fontSize:"9.5px",fontWeight:600,textTransform:"uppercase",letterSpacing:"0.07em",marginBottom:"5px",fontFamily:"var(--mono)"}}>Long-term</p><Tags items={a.skin_impact.long_term_concerns} color="#f87171"/></div>}
+                        </Sec>
+                      </div>
+                    )}
+                    {a.harsh_chemicals?.length>0 && <Sec icon="⚠️" title="Harsh Chemicals" color="#f87171"><div style={{display:"flex",flexDirection:"column",gap:"6px"}}>{a.harsh_chemicals.map((it,i)=><div key={i} style={{background:"#2e0a0a",border:"1px solid #991b1b22",borderRadius:"9px",padding:"10px 12px"}}><div style={{display:"flex",alignItems:"center",gap:"6px",marginBottom:"3px"}}><span style={{fontSize:"14px"}}>⚠️</span><span style={{color:"#f87171",fontWeight:700,fontSize:"13px"}}>{it.name}</span></div><p style={{color:"var(--muted)",fontSize:"11.5px",margin:0,lineHeight:1.45}}>{it.concern}</p></div>)}</div></Sec>}
+                  </>)}
+                  {a.product_type==="cleaning" && (<>
+                    {a.environmental_impact && (
+                      <div style={{background:"#0a1420",border:"1px solid #183048",borderRadius:"13px",padding:"14px"}}>
+                        <Sec icon="🌍" title="Environmental Impact" color="#38bdf8">
+                          <div style={{display:"flex",justifyContent:"center",marginBottom:"4px"}}><Gauge score={a.environmental_impact.eco_score} label="Eco Score" color="#38bdf8"/></div>
+                          <Metric label="Biodegradability" value={a.environmental_impact.biodegradability}/>
+                          <Metric label="Aquatic Toxicity" value={a.environmental_impact.aquatic_toxicity_risk}/>
+                          <Metric label="VOC Level" value={a.environmental_impact.voc_level}/>
+                          <Metric label="Phosphate Free" value={a.environmental_impact.phosphate_free}/>
+                          <Metric label="Microplastic Risk" value={a.environmental_impact.microplastic_risk}/>
+                          {a.environmental_impact.voc_details && <div style={{marginTop:"10px",background:"#0c1826",borderRadius:"9px",padding:"10px"}}><p style={{color:"var(--dim)",fontSize:"9px",fontWeight:600,textTransform:"uppercase",letterSpacing:"0.07em",margin:"0 0 3px",fontFamily:"var(--mono)"}}>VOC Details</p><p style={{color:"#8aa3b8",fontSize:"11.5px",margin:0,lineHeight:1.5}}>{a.environmental_impact.voc_details}</p></div>}
+                        </Sec>
+                      </div>
+                    )}
+                    {a.hazardous_chemicals?.length>0 && <Sec icon="☣️" title="Hazardous Chemicals" color="#f87171"><div style={{display:"flex",flexDirection:"column",gap:"6px"}}>{a.hazardous_chemicals.map((it,i)=><div key={i} style={{background:"#2e0a0a",border:"1px solid #991b1b22",borderRadius:"9px",padding:"10px 12px"}}><div style={{display:"flex",alignItems:"center",gap:"6px",flexWrap:"wrap",marginBottom:"3px"}}><span style={{fontSize:"14px"}}>☣️</span><span style={{color:"#f87171",fontWeight:700,fontSize:"13px"}}>{it.name}</span>{it.hazard_type&&<span style={{background:"#f8717118",color:"#f87171",fontSize:"9px",fontWeight:600,padding:"2px 6px",borderRadius:"14px",fontFamily:"var(--mono)",textTransform:"uppercase"}}>{it.hazard_type.replace(/_/g," ")}</span>}</div><p style={{color:"var(--muted)",fontSize:"11.5px",margin:0,lineHeight:1.45}}>{it.detail}</p></div>)}</div></Sec>}
+                    {a.safety_precautions?.length>0 && <Sec icon="🛡️" title="Safety Precautions" color="#fbbf24"><Tags items={a.safety_precautions} color="#fbbf24"/></Sec>}
+                  </>)}
+                  {a.recommendation && <div style={{background:"linear-gradient(145deg,#0a1a2e,#08081a)",border:"1px solid #1e3a5a",borderRadius:"13px",padding:"14px"}}><Sec icon="💡" title="Recommendation" color="#60a5fa"><p style={{color:"var(--text2)",fontSize:"12.5px",lineHeight:1.6,margin:0}}>{a.recommendation}</p></Sec></div>}
+                </>)}
+
+                {/* INGREDIENTS TAB */}
+                {tab==="ingredients" && <div style={{display:"flex",flexDirection:"column",gap:"6px"}}><p style={{color:"var(--muted)",fontSize:"11px",margin:"0 0 3px",fontFamily:"var(--mono)"}}>{a.ingredients?.length||0} ingredients</p>{a.ingredients?.map((ing,i)=><IngCard key={i} ing={ing}/>)}</div>}
+
+                {/* EXTRAS TAB */}
+                {tab==="extras" && (<>
+                  {a.better_alternatives?.length>0 && <Sec icon="🔄" title="Better Alternatives" color="#34d399"><div style={{display:"flex",flexDirection:"column",gap:"6px"}}>{a.better_alternatives.map((alt,i)=><div key={i} style={{background:"#0a2018",border:"1px solid #16432e",borderRadius:"9px",padding:"10px 12px"}}><div style={{display:"flex",alignItems:"center",gap:"5px",marginBottom:"3px",flexWrap:"wrap"}}><span style={{color:"#f87171",fontSize:"12px",fontWeight:600,textDecoration:"line-through",opacity:0.7}}>{alt.instead_of}</span><span style={{color:"var(--dim)",fontSize:"11px"}}>→</span><span style={{color:"#34d399",fontSize:"12px",fontWeight:700}}>{alt.use}</span></div><p style={{color:"var(--muted)",fontSize:"11px",margin:0,lineHeight:1.4}}>{alt.why}</p></div>)}</div></Sec>}
+                  <Sec icon="📤" title="Share Report" color="var(--indigo)"><ShareCard a={a}/></Sec>
+                  {history.length>=2 && <button onClick={()=>setView("history")} style={{background:"var(--surface)",border:"1px solid var(--border)",borderRadius:"11px",padding:"13px",color:"var(--indigo)",fontSize:"13px",fontWeight:600,display:"flex",alignItems:"center",justifyContent:"center",gap:"6px"}}>⚖️ Compare with Another Product</button>}
+                </>)}
+
+                <button onClick={reset} style={{background:th.grad,borderRadius:"13px",padding:"15px",color:"#fff",fontSize:"15px",fontWeight:700,display:"flex",alignItems:"center",justifyContent:"center",gap:"8px",boxShadow:`0 4px 18px ${th.accent}28`,marginTop:"2px"}}>🔍 Scan New Product</button>
+              </div>
+            )}
+
+            {/* ═══ HISTORY ═══ */}
+            {view==="history" && (
+              <div className="fade-up" style={{display:"flex",flexDirection:"column",gap:"11px",marginTop:"4px"}}>
+                <div style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}><h2 style={{color:"var(--text)",fontSize:"15px",fontWeight:700}}>📜 Scan History</h2><button onClick={()=>setView("home")} style={{background:"var(--surface)",border:"1px solid var(--border)",borderRadius:"8px",padding:"5px 10px",color:"var(--muted)",fontSize:"11px"}}>← Back</button></div>
+                {compare.length===2 && <Compare items={compare} onClose={()=>setCompare([])}/>}
+                {compare.length===1 && <div style={{background:"#1a1a30",border:"1px solid #2a2a4a",borderRadius:"10px",padding:"9px 13px",color:"var(--indigo)",fontSize:"11.5px"}}>⚖️ Select one more to compare (1/2)</div>}
+                {history.length===0 ? <div style={{textAlign:"center",padding:"36px 16px"}}><p style={{color:"var(--dim)",fontSize:"13px"}}>No scans yet.</p></div> : (
+                  <div style={{display:"flex",flexDirection:"column",gap:"6px"}}>
+                    {history.map(h=>{const ht=TH[h.product_type]||TH.food;const isSel=compare.find(c=>c.id===h.id);const bad=h.ingredients?.filter(i=>i.rating==="bad").length||0;return(
+                      <div key={h.id} style={{background:isSel?`${ht.accent}0c`:"var(--surface)",border:`1px solid ${isSel?ht.accent+"35":"var(--border)"}`,borderRadius:"10px",padding:"10px 12px",display:"flex",gap:"8px",alignItems:"center"}}>
+                        <div onClick={()=>{setAnalysis(h);setView("results");setTab("overview");}} style={{flex:1,cursor:"pointer",minWidth:0,display:"flex",alignItems:"center",gap:"7px"}}>
+                          <span style={{fontSize:"16px"}}>{ht.icon}</span>
+                          <div style={{minWidth:0}}><p style={{color:"var(--text)",fontSize:"12.5px",fontWeight:600,margin:0,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{h.product_name_guess}</p><div style={{display:"flex",gap:"6px",marginTop:"1px"}}><span style={{color:"var(--dim)",fontSize:"9.5px",fontFamily:"var(--mono)"}}>{new Date(h.scannedAt).toLocaleDateString()}</span>{bad>0&&<span style={{color:"#f87171",fontSize:"9.5px",fontFamily:"var(--mono)"}}>⚠{bad}</span>}</div></div>
+                        </div>
+                        <span style={{color:h.health_score>=7?"#34d399":h.health_score>=4?"#fbbf24":"#f87171",fontSize:"16px",fontWeight:800,fontFamily:"var(--mono)",flexShrink:0}}>{h.health_score}<span style={{fontSize:"9px",color:"var(--dim)"}}>/10</span></span>
+                        <button onClick={()=>togComp(h)} style={{background:isSel?`${ht.accent}20`:"#1a1a2e",border:`1px solid ${isSel?ht.accent+"45":"var(--border)"}`,borderRadius:"7px",padding:"5px 7px",color:isSel?ht.accent:"var(--muted)",fontSize:"10px",fontFamily:"var(--mono)",fontWeight:600,flexShrink:0}}>{isSel?"✓":"⚖️"}</button>
+                      </div>
+                    );})}
+                  </div>
+                )}
+                {history.length>0 && <button onClick={()=>{setHistory([]);ls.set("il-history",[]);}} style={{background:"transparent",border:"1px solid #991b1b28",borderRadius:"10px",padding:"10px",color:"#f87171",fontSize:"12px",fontWeight:600}}>🗑️ Clear History</button>}
+              </div>
+            )}
+          </div>
+        </div>
+      );
+    }
+
+    ReactDOM.createRoot(document.getElementById("app")).render(<App/>);
+  </script>
+</body>
+</html>

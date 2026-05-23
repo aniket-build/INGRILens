@@ -1,0 +1,28 @@
+{
+  "name": "Ingredient Lens - Universal Product Scanner",
+  "short_name": "Ingredient Lens",
+  "description": "Scan ingredient labels on food, cosmetics, and cleaning products. Get instant health analysis, skin impact reports, and environmental scores.",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#08080e",
+  "theme_color": "#34d399",
+  "orientation": "portrait",
+  "scope": "/",
+  "icons": [
+    {
+      "src": "/icons/icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any maskable"
+    },
+    {
+      "src": "/icons/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any maskable"
+    }
+  ],
+  "categories": ["health", "lifestyle", "utilities"],
+  "screenshots": [],
+  "prefer_related_applications": false
+}
