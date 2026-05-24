@@ -71,7 +71,6 @@
   <script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.9/babel.min.js"></script>
-  <script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
 
   <script type="text/babel">
     const { useState, useRef, useCallback, useEffect } = React;
@@ -313,103 +312,119 @@ Categories for cleaning: surfactant|solvent|builder|bleach|enzyme|fragrance|pres
       // Clean base64 data
       const cleanBase64 = (str) => str.replace(/[\s\r\n]/g, '').replace(/^data:image\/\w+;base64,/, '');
 
-      // ─── OCR: Extract text from image on-device ───
-      const [ocrProgress, setOcrProgress] = useState("");
+      // ─── STATE FOR REVIEW FLOW ───
       const [extractedText, setExtractedText] = useState("");
+      const [scanStep, setScanStep] = useState(""); // reading | analyzing
 
+      // ─── STEP 1: Use Haiku (cheap) to READ text from image ───
       const extractTextFromImage = async (imageSource) => {
-        setView("scanning"); setError(null); setOcrProgress("Initializing scanner...");
+        setView("scanning"); setError(null); setScanStep("reading");
         try {
-          // Get image as canvas data URL
+          // Resize image — 1000px is enough for text reading
           let imageUrl;
-          if (imageSource instanceof HTMLVideoElement) {
-            const c = document.createElement('canvas');
-            const maxDim = 1200;
-            let w = imageSource.videoWidth, h = imageSource.videoHeight;
+          const resize = (src, srcW, srcH) => {
+            const maxDim = 1000;
+            let w = srcW, h = srcH;
             if (w > maxDim || h > maxDim) {
               const scale = Math.min(maxDim/w, maxDim/h);
               w = Math.floor(w*scale); h = Math.floor(h*scale);
             }
+            const c = document.createElement('canvas');
             c.width=w; c.height=h;
-            const ctx = c.getContext('2d');
-            ctx.drawImage(imageSource,0,0,w,h);
-            // Boost contrast for better OCR
-            ctx.globalCompositeOperation = 'multiply';
-            ctx.fillStyle = 'rgb(240,240,240)';
-            ctx.fillRect(0,0,w,h);
-            ctx.globalCompositeOperation = 'source-over';
-            imageUrl = c.toDataURL('image/png');
+            c.getContext('2d').drawImage(src,0,0,w,h);
+            return c.toDataURL('image/jpeg', 0.7);
+          };
+
+          if (imageSource instanceof HTMLVideoElement) {
+            imageUrl = resize(imageSource, imageSource.videoWidth, imageSource.videoHeight);
+          } else if (typeof imageSource === 'string' && imageSource.startsWith('data:')) {
+            // Need to load into an Image first to resize
+            imageUrl = await new Promise((resolve, reject) => {
+              const img = new Image();
+              img.onload = () => resolve(resize(img, img.width, img.height));
+              img.onerror = reject;
+              img.src = imageSource;
+            });
           } else {
-            imageUrl = imageSource; // Already a data URL
+            imageUrl = imageSource;
           }
 
           setCapturedImg(imageUrl);
-          setOcrProgress("Reading text from image...");
+          const base64 = imageUrl.split(",")[1];
 
-          const result = await Tesseract.recognize(imageUrl, 'eng', {
-            logger: m => {
-              if (m.status === 'recognizing text') {
-                const pct = Math.round((m.progress || 0) * 100);
-                setOcrProgress(`Reading text... ${pct}%`);
-              }
-            }
+          // Call Haiku to just extract the text — cheap and fast
+          const resp = await fetch(API_URL, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              model: "claude-haiku-4-5-20251001",
+              max_tokens: 2000,
+              messages: [{
+                role: "user",
+                content: [
+                  { type: "image", source: { type: "base64", media_type: "image/jpeg", data: base64 } },
+                  { type: "text", text: "Extract ONLY the ingredient list from this product label image. Return just the raw ingredient text exactly as written on the label — nothing else. No commentary, no formatting, no headers. If you see multiple sections, only extract the ingredients/composition list. If you cannot read any ingredients, respond with exactly: UNREADABLE" }
+                ]
+              }]
+            })
           });
 
-          const text = result.data.text?.trim();
-          console.log("OCR extracted text:", text);
+          const data = await resp.json();
+          if (data.error) throw new Error(data.error.message);
 
-          if (!text || text.length < 10) {
-            throw new Error("Couldn't read text from this image. Tips:\n\n📸 Hold closer — fill the frame with JUST the ingredient list\n💡 Ensure good lighting, avoid shadows\n📋 Or tap 'Type Manually' to enter ingredients by hand");
+          const text = data.content?.map(c => c.text || "").join("").trim();
+          console.log("Haiku extracted:", text);
+
+          if (!text || text === "UNREADABLE" || text.length < 10) {
+            throw new Error("Couldn't read the ingredient list. Tips:\n\n📸 Zoom in closer to JUST the ingredient list\n💡 Ensure good lighting, avoid glare\n📋 Or tap 'Type Manually' to enter ingredients by hand");
           }
 
-          // Show extracted text for review before analyzing
           setExtractedText(text);
           setView("review_ocr");
         } catch (err) {
-          if (err.message.includes("Couldn't read")) {
-            setError(err.message);
-          } else {
-            console.error("OCR error:", err);
-            setError("Failed to scan image. Try 'Upload Photo' or 'Type Manually' instead.");
-          }
+          console.error("Extraction error:", err);
+          setError(err.message);
           setView("home");
         }
       };
 
-      // ─── ANALYZE: Only text goes to API ───
+      // ─── STEP 2: Use Sonnet to ANALYZE (text only — cheap!) ───
       const analyze = async (content) => {
-        setView("analyzing"); setError(null);
+        setView("analyzing"); setError(null); setScanStep("analyzing");
         try {
-          const msgs = [{ role:"user", content:`Ingredient list from a product:\n\n${content}\n\nDetect type and analyze.` }];
-
-          const resp = await fetch(API_URL,{
-            method:"POST",
-            headers:{"Content-Type":"application/json"},
-            body:JSON.stringify({model:"claude-sonnet-4-20250514",max_tokens:4096,system:ANALYSIS_PROMPT,messages:msgs})
+          const resp = await fetch(API_URL, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              model: "claude-sonnet-4-20250514",
+              max_tokens: 4096,
+              system: ANALYSIS_PROMPT,
+              messages: [{ role: "user", content: `Ingredient list from a product:\n\n${content}\n\nDetect type and analyze.` }]
+            })
           });
 
           const data = await resp.json();
-          if(data.error) throw new Error(data.error.message || data.error.type || "API error");
-          if(!data.content) throw new Error("No response. Check Netlify Function logs.");
+          if (data.error) throw new Error(data.error.message || data.error.type || "API error");
+          if (!data.content) throw new Error("No response. Check Netlify Function logs.");
 
-          const text = data.content?.map(c=>c.text||"").join("")||"";
-          if(!text) throw new Error("Empty response. Please try again.");
+          const text = data.content?.map(c => c.text || "").join("") || "";
+          if (!text) throw new Error("Empty response. Please try again.");
 
           let parsed;
           try {
-            const jsonStr = text.replace(/```json|```/g,"").trim();
+            const jsonStr = text.replace(/```json|```/g, "").trim();
             const jsonMatch = jsonStr.match(/\{[\s\S]*\}/);
             if (jsonMatch) { parsed = JSON.parse(jsonMatch[0]); }
             else { throw new Error("no JSON"); }
-          } catch(parseErr) {
-            throw new Error("AI returned an unexpected response. Try again or rephrase the ingredients.");
+          } catch (parseErr) {
+            throw new Error("AI returned an unexpected response. Try again.");
           }
 
           setAnalysis(parsed); setView("results"); setTab("overview");
-          const entry = {...parsed, id:Date.now(), scannedAt:new Date().toISOString()};
-          const nh = [entry,...history].slice(0,50);
-          setHistory(nh); ls.set("il-history",nh);
-        } catch(err) {
+          const entry = { ...parsed, id: Date.now(), scannedAt: new Date().toISOString() };
+          const nh = [entry, ...history].slice(0, 50);
+          setHistory(nh); ls.set("il-history", nh);
+        } catch (err) {
           console.error("Analysis error:", err);
           setError(err.message);
           setView("home");
@@ -418,16 +433,16 @@ Categories for cleaning: surfactant|solvent|builder|bleach|enzyme|fragrance|pres
 
       // ─── CAMERA & FILE HANDLERS ───
       const capture = () => {
-        const v=videoRef.current; if(!v) return;
+        const v = videoRef.current; if (!v) return;
         stopCam();
         extractTextFromImage(v);
       };
 
       const onFile = (e) => {
-        const f=e.target.files?.[0]; if(!f)return;
-        const rd=new FileReader();
-        rd.onload=()=>{ extractTextFromImage(rd.result); };
-        rd.readAsDataURL(f); e.target.value="";
+        const f = e.target.files?.[0]; if (!f) return;
+        const rd = new FileReader();
+        rd.onload = () => { extractTextFromImage(rd.result); };
+        rd.readAsDataURL(f); e.target.value = "";
       };
       const reset = () => { stopCam(); setView("home"); setAnalysis(null); setError(null); setManualText(""); setCapturedImg(null); setCompare([]); };
 
@@ -520,14 +535,14 @@ Categories for cleaning: surfactant|solvent|builder|bleach|enzyme|fragrance|pres
               </div>
             )}
 
-            {/* ═══ SCANNING (OCR in progress) ═══ */}
+            {/* ═══ SCANNING (Haiku reading text from image) ═══ */}
             {view==="scanning" && (
               <div style={{textAlign:"center",padding:"44px 16px"}}>
                 {capturedImg && <img src={capturedImg} alt="" style={{width:"100%",maxHeight:"150px",objectFit:"cover",borderRadius:"11px",marginBottom:"16px",opacity:0.5}}/>}
                 <div style={{width:"40px",height:"40px",border:"3px solid #1e1e2e",borderTop:"3px solid var(--green)",borderRadius:"50%",margin:"0 auto 14px",animation:"spin .8s linear infinite"}}/>
-                <p style={{color:"var(--green)",fontSize:"14px",fontWeight:600}}>📷 Scanning Label...</p>
-                <p style={{color:"var(--muted)",fontSize:"11.5px",marginTop:"4px"}}>{ocrProgress}</p>
-                <p style={{color:"var(--dim)",fontSize:"10px",marginTop:"8px"}}>Reading text on your device — no data sent yet</p>
+                <p style={{color:"var(--green)",fontSize:"14px",fontWeight:600}}>📷 Reading Label...</p>
+                <p style={{color:"var(--muted)",fontSize:"11.5px",marginTop:"4px"}}>Extracting ingredient text from image</p>
+                <p style={{color:"var(--dim)",fontSize:"10px",marginTop:"8px"}}>You'll be able to review & edit before analysis</p>
               </div>
             )}
 
