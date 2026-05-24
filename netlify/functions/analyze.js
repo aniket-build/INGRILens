@@ -50,6 +50,13 @@ exports.handler = async (event) => {
     console.log('Calling Anthropic API...');
     const startTime = Date.now();
 
+    // Log which model is being used
+    try {
+      const reqBody = JSON.parse(event.body);
+      console.log('Model:', reqBody.model);
+      console.log('Has images:', JSON.stringify(event.body).includes('"type":"image"'));
+    } catch(e) {}
+
     // Use AbortController for explicit timeout — 24s leaves buffer under 26s function limit
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), 24000);
