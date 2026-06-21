@@ -1,4 +1,4 @@
-const CACHE_NAME = 'ingredient-lens-v1';
+const CACHE_NAME = 'ingredient-lens-v2';
 const STATIC_ASSETS = [
   '/',
   '/index.html',
@@ -28,6 +28,16 @@ self.addEventListener('activate', (event) => {
 // Fetch — network first for API, cache first for assets
 self.addEventListener('fetch', (event) => {
   const url = new URL(event.request.url);
+
+  // Never cache non-GET requests (POST to functions etc.) — pass straight through
+  if (event.request.method !== 'GET') {
+    return;
+  }
+
+  // Never cache the API function endpoint
+  if (url.pathname.startsWith('/.netlify/functions/')) {
+    return;
+  }
 
   // Don't cache API calls — always go to network
   if (url.hostname === 'api.anthropic.com') {
