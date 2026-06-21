@@ -111,6 +111,7 @@ exports.handler = async (event) => {
     anthropicBody = {
       model: 'claude-sonnet-4-6',
       max_tokens: 4096,
+      effort: 'low',
       system: ANALYSIS_PROMPT,
       messages: [{ role: 'user', content: `Ingredient list from a product:\n\n${text}\n\nDetect type and analyze.` }],
     };
@@ -123,7 +124,7 @@ exports.handler = async (event) => {
     const startTime = Date.now();
 
     const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 24000);
+    const timeoutId = setTimeout(() => controller.abort(), 25500);
 
     const response = await fetch('https://api.anthropic.com/v1/messages', {
       method: 'POST',
