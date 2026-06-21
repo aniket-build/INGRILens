@@ -59,10 +59,10 @@
     }
 
     // ─── PWA INSTALL PROMPT ─────────────────────────
-    let deferredPrompt = null;
+    window.deferredPrompt = null;
     window.addEventListener('beforeinstallprompt', (e) => {
       e.preventDefault();
-      deferredPrompt = e;
+      window.deferredPrompt = e;
       // The app will pick this up
       window.dispatchEvent(new Event('pwaInstallReady'));
     });
@@ -198,18 +198,162 @@ Categories for cleaning: surfactant|solvent|builder|bleach|enzyme|fragrance|pres
       </div>
     );
 
+    // ─── PNG SCORECARD GENERATOR (Canvas, client-side, free) ───
+    const generateScorecardPNG = (a) => {
+      const t = TH[a.product_type] || TH.food;
+      const bad = a.ingredients?.filter(i=>i.rating==="bad").length||0;
+      const caut = a.ingredients?.filter(i=>i.rating==="caution").length||0;
+      const good = a.ingredients?.filter(i=>i.rating==="good").length||0;
+      const accentRgb = {food:"52,211,153", cosmetic:"244,114,182", cleaning:"56,189,248"}[a.product_type] || "52,211,153";
+
+      const W = 1080, H = 1920;
+      const c = document.createElement('canvas');
+      c.width = W; c.height = H;
+      const ctx = c.getContext('2d');
+
+      // Polyfill roundRect for older Android WebViews that don't support it natively
+      if (!ctx.roundRect) {
+        ctx.roundRect = function(x, y, w, h, r) {
+          this.beginPath();
+          this.moveTo(x + r, y);
+          this.arcTo(x + w, y, x + w, y + h, r);
+          this.arcTo(x + w, y + h, x, y + h, r);
+          this.arcTo(x, y + h, x, y, r);
+          this.arcTo(x, y, x + w, y, r);
+          this.closePath();
+        };
+      }
+
+      // Background gradient
+      const bg = ctx.createLinearGradient(0,0,0,H);
+      bg.addColorStop(0,"#0d0d18"); bg.addColorStop(1,"#06060c");
+      ctx.fillStyle = bg; ctx.fillRect(0,0,W,H);
+
+      // Soft accent glow top-right
+      const glow = ctx.createRadialGradient(W*0.85,180,0,W*0.85,180,500);
+      glow.addColorStop(0,`rgba(${accentRgb},0.18)`); glow.addColorStop(1,"rgba(0,0,0,0)");
+      ctx.fillStyle = glow; ctx.fillRect(0,0,W,H);
+
+      const wrapText = (text, x, y, maxWidth, lineHeight, font, color, align="left", maxLines=99) => {
+        ctx.font = font; ctx.fillStyle = color; ctx.textAlign = align;
+        const words = String(text).split(' ');
+        let line = '', lines = [];
+        for (let n=0; n<words.length; n++) {
+          const test = line + words[n] + ' ';
+          if (ctx.measureText(test).width > maxWidth && n > 0) { lines.push(line); line = words[n] + ' '; }
+          else line = test;
+        }
+        lines.push(line);
+        lines = lines.slice(0, maxLines);
+        lines.forEach((l, i) => ctx.fillText(l.trim(), x, y + i*lineHeight));
+        return y + lines.length*lineHeight;
+      };
+
+      // Brand header
+      ctx.textAlign = "center";
+      ctx.font = "800 36px 'JetBrains Mono', monospace";
+      ctx.fillStyle = "#34d399";
+      ctx.fillText("🔍 INGREDIENT LENS", W/2, 110);
+
+      // Category pill
+      ctx.font = "700 26px 'JetBrains Mono', monospace";
+      ctx.fillStyle = `rgba(${accentRgb},1)`;
+      ctx.fillText(`${t.icon}  ${t.label.toUpperCase()} PRODUCT`, W/2, 165);
+
+      // Product name
+      ctx.font = "800 52px 'DM Sans', sans-serif";
+      ctx.fillStyle = "#f5f5f8";
+      let y = wrapText(a.product_name_guess || "Product", W/2, 270, 880, 60, "800 52px 'DM Sans', sans-serif", "#f5f5f8", "center", 2);
+
+      // Score gauge (semi-circle)
+      const gx = W/2, gy = y + 200, gr = 220;
+      ctx.lineWidth = 36; ctx.lineCap = "round";
+      ctx.strokeStyle = "#1e1e2e";
+      ctx.beginPath(); ctx.arc(gx, gy, gr, Math.PI, 0); ctx.stroke();
+      const scoreColor = a.health_score>=7 ? "#34d399" : a.health_score>=4 ? "#fbbf24" : "#f87171";
+      const pct = Math.max(0.02, a.health_score/10);
+      ctx.strokeStyle = scoreColor;
+      ctx.beginPath(); ctx.arc(gx, gy, gr, Math.PI, Math.PI + Math.PI*pct); ctx.stroke();
+
+      ctx.font = "800 130px 'JetBrains Mono', monospace";
+      ctx.fillStyle = scoreColor; ctx.textAlign = "center";
+      ctx.fillText(String(a.health_score), gx, gy - 20);
+      ctx.font = "600 32px 'DM Sans', sans-serif";
+      ctx.fillStyle = "#888";
+      ctx.fillText("OUT OF 10", gx, gy + 40);
+      ctx.font = "700 30px 'JetBrains Mono', monospace";
+      ctx.fillStyle = scoreColor;
+      ctx.fillText(a.health_score>=7?"GOOD":a.health_score>=4?"FAIR":"POOR", gx, gy + 85);
+
+      let cursorY = gy + 170;
+
+      // Good/Caution/Bad pills
+      const pillY = cursorY;
+      const pills = [["GOOD",good,"#34d399"],["CAUTION",caut,"#fbbf24"],["BAD",bad,"#f87171"]];
+      const pillW = 280, gap = 30, totalW = pillW*3 + gap*2, startX = W/2 - totalW/2;
+      pills.forEach(([label,count,color],i)=>{
+        const px = startX + i*(pillW+gap);
+        ctx.fillStyle = `${color}18`;
+        ctx.beginPath(); ctx.roundRect(px, pillY, pillW, 110, 16); ctx.fill();
+        ctx.strokeStyle = `${color}55`; ctx.lineWidth=2; ctx.stroke();
+        ctx.textAlign = "center";
+        ctx.font = "800 56px 'JetBrains Mono', monospace"; ctx.fillStyle = color;
+        ctx.fillText(String(count), px+pillW/2, pillY+58);
+        ctx.font = "700 22px 'JetBrains Mono', monospace"; ctx.fillStyle = "#999";
+        ctx.fillText(label, px+pillW/2, pillY+95);
+      });
+      cursorY = pillY + 160;
+
+      // Recommendation box
+      const boxY = cursorY + 20, boxH = 280;
+      ctx.fillStyle = "rgba(255,255,255,0.04)";
+      ctx.beginPath(); ctx.roundRect(80, boxY, W-160, boxH, 20); ctx.fill();
+      ctx.strokeStyle = "rgba(255,255,255,0.08)"; ctx.lineWidth=1.5; ctx.stroke();
+      ctx.font = "800 28px 'JetBrains Mono', monospace"; ctx.fillStyle = "#60a5fa"; ctx.textAlign="left";
+      ctx.fillText("💡 RECOMMENDATION", 120, boxY+55);
+      wrapText(a.recommendation || "", 120, boxY+105, W-240, 42, "500 32px 'DM Sans', sans-serif", "#cbd5e1", "left", 5);
+
+      // Footer
+      ctx.textAlign = "center";
+      ctx.font = "600 28px 'DM Sans', sans-serif"; ctx.fillStyle = "#666";
+      ctx.fillText("Scan your own products free at", W/2, H-130);
+      ctx.font = "800 36px 'JetBrains Mono', monospace"; ctx.fillStyle = "#34d399";
+      ctx.fillText("ingrilens.netlify.app", W/2, H-75);
+
+      return c.toDataURL('image/png');
+    };
+
+    const downloadScorecard = (a) => {
+      const dataUrl = generateScorecardPNG(a);
+      const link = document.createElement('a');
+      link.download = `ingredient-lens-${(a.product_name_guess||'scan').replace(/[^a-z0-9]/gi,'-').toLowerCase()}.png`;
+      link.href = dataUrl;
+      link.click();
+    };
+
     const ShareCard = ({ a }) => {
       const t = TH[a.product_type]||TH.food;
       const bad=a.ingredients?.filter(i=>i.rating==="bad").length||0;
       const caut=a.ingredients?.filter(i=>i.rating==="caution").length||0;
       const good=a.ingredients?.filter(i=>i.rating==="good").length||0;
       const [copied,setCopied]=useState(false);
+      const [downloaded,setDownloaded]=useState(false);
 
       const copy = () => {
-        const txt=`🔍 INGREDIENT LENS REPORT\n━━━━━━━━━━━━━━━━━━━━\n${t.icon} ${a.product_name_guess}\nType: ${t.label} | Score: ${a.health_score}/10 ${a.health_score>=7?"✅":a.health_score>=4?"⚠️":"🚨"}\n\n📊 ✅ ${good} Good · ⚠️ ${caut} Caution · ❌ ${bad} Bad\n${a.health_concerns?.length?`\n🚨 ${a.health_concerns.join(", ")}`:""}${a.skin_impact?`\n🧬 Irritation: ${a.skin_impact.irritation_risk}`:""}${a.environmental_impact?`\n🌍 Eco: ${a.environmental_impact.eco_score}/10 | VOC: ${a.environmental_impact.voc_level}`:""}\n\n💡 ${a.recommendation}\n\nScanned with Ingredient Lens 🔬`;
+        const txt=`🔍 INGREDIENT LENS REPORT\n━━━━━━━━━━━━━━━━━━━━\n${t.icon} ${a.product_name_guess}\nType: ${t.label} | Score: ${a.health_score}/10 ${a.health_score>=7?"✅":a.health_score>=4?"⚠️":"🚨"}\n\n📊 ✅ ${good} Good · ⚠️ ${caut} Caution · ❌ ${bad} Bad\n${a.health_concerns?.length?`\n🚨 ${a.health_concerns.join(", ")}`:""}${a.skin_impact?`\n🧬 Irritation: ${a.skin_impact.irritation_risk}`:""}${a.environmental_impact?`\n🌍 Eco: ${a.environmental_impact.eco_score}/10 | VOC: ${a.environmental_impact.voc_level}`:""}\n\n💡 ${a.recommendation}\n\nScan your own products free 👉 https://ingrilens.netlify.app`;
         navigator.clipboard.writeText(txt).then(()=>{setCopied(true);setTimeout(()=>setCopied(false),2000);}).catch(()=>{});
-        // Also try native share
         if (navigator.share) { navigator.share({ title:"Ingredient Lens Report", text:txt }).catch(()=>{}); }
+      };
+
+      const [downloadError,setDownloadError]=useState(false);
+      const download = () => {
+        try {
+          downloadScorecard(a);
+          setDownloaded(true); setTimeout(()=>setDownloaded(false),2000);
+        } catch(err) {
+          console.error("Scorecard generation failed:", err);
+          setDownloadError(true); setTimeout(()=>setDownloadError(false),2500);
+        }
       };
 
       return (
@@ -224,9 +368,14 @@ Categories for cleaning: surfactant|solvent|builder|bleach|enzyme|fragrance|pres
             <span style={{ fontSize:"12px" }}><span style={{ color:"#f87171",fontWeight:700,fontFamily:"var(--mono)" }}>{bad}</span> <span style={{ color:"var(--dim)",fontSize:"10px" }}>bad</span></span>
           </div>
           <p style={{ color:"var(--muted)",fontSize:"11px",lineHeight:1.5,margin:"0 0 12px" }}>{a.recommendation}</p>
-          <button onClick={copy} style={{ width:"100%",background:copied?"#166534":t.grad,borderRadius:"9px",padding:"11px",color:"#fff",fontSize:"12.5px",fontWeight:700,display:"flex",alignItems:"center",justifyContent:"center",gap:"6px" }}>
-            {copied?"✓ Copied!":"📤 Share Report Card"}
-          </button>
+          <div style={{display:"flex",gap:"8px"}}>
+            <button onClick={download} style={{ flex:1,background:downloadError?"#7f1d1d":downloaded?"#166534":"rgba(255,255,255,0.06)",border:`1px solid ${downloadError?"#f87171":t.accent+"40"}`,borderRadius:"9px",padding:"11px",color:(downloaded||downloadError)?"#fff":t.accent,fontSize:"12.5px",fontWeight:700,display:"flex",alignItems:"center",justifyContent:"center",gap:"6px" }}>
+              {downloadError?"✕ Failed — try Copy":downloaded?"✓ Saved!":"🖼️ Download PNG"}
+            </button>
+            <button onClick={copy} style={{ flex:1,background:copied?"#166534":t.grad,borderRadius:"9px",padding:"11px",color:"#fff",fontSize:"12.5px",fontWeight:700,display:"flex",alignItems:"center",justifyContent:"center",gap:"6px" }}>
+              {copied?"✓ Copied!":"📤 Copy Text"}
+            </button>
+          </div>
         </div>
       );
     };
@@ -359,8 +508,13 @@ Categories for cleaning: surfactant|solvent|builder|bleach|enzyme|fragrance|pres
             body: JSON.stringify({ mode: "extract", image: base64 })
           });
 
-          const data = await resp.json();
-          if (data.error) throw new Error("Couldn't process the image right now. Please try again in a moment.");
+          let data;
+          try { data = await resp.json(); }
+          catch { throw new Error("Server didn't respond properly. Please try again in a moment."); }
+          if (data.error) {
+            if (resp.status === 429) throw new Error(data.error.message || "You've reached the scan limit. Please try again later.");
+            throw new Error("Couldn't process the image right now. Please try again in a moment.");
+          }
 
           const text = data.content?.map(c => c.text || "").join("").trim();
           console.log("Haiku extracted:", text);
@@ -370,7 +524,8 @@ Categories for cleaning: surfactant|solvent|builder|bleach|enzyme|fragrance|pres
           }
 
           setExtractedText(text);
-          setView("review_ocr");
+          // Auto-continue straight to analysis — no manual confirmation needed
+          analyze(text);
         } catch (err) {
           console.error("Extraction error:", err);
           setError(err.message);
@@ -388,8 +543,13 @@ Categories for cleaning: surfactant|solvent|builder|bleach|enzyme|fragrance|pres
             body: JSON.stringify({ mode: "analyze", text: content })
           });
 
-          const data = await resp.json();
-          if (data.error) throw new Error("Couldn't analyze right now. Please try again in a moment.");
+          let data;
+          try { data = await resp.json(); }
+          catch { throw new Error("Server didn't respond properly. Please try again in a moment."); }
+          if (data.error) {
+            if (resp.status === 429) throw new Error(data.error.message || "You've reached the scan limit. Please try again later.");
+            throw new Error("Couldn't analyze right now. Please try again in a moment.");
+          }
           if (!data.content) throw new Error("No response. Check Netlify Function logs.");
 
           const text = data.content?.map(c => c.text || "").join("") || "";
@@ -535,25 +695,7 @@ Categories for cleaning: surfactant|solvent|builder|bleach|enzyme|fragrance|pres
                 <div style={{width:"40px",height:"40px",border:"3px solid #1e1e2e",borderTop:"3px solid var(--green)",borderRadius:"50%",margin:"0 auto 14px",animation:"spin .8s linear infinite"}}/>
                 <p style={{color:"var(--green)",fontSize:"14px",fontWeight:600}}>📷 Reading Label...</p>
                 <p style={{color:"var(--muted)",fontSize:"11.5px",marginTop:"4px"}}>Extracting ingredient text from image</p>
-                <p style={{color:"var(--dim)",fontSize:"10px",marginTop:"8px"}}>You'll be able to review & edit before analysis</p>
-              </div>
-            )}
-
-            {/* ═══ REVIEW OCR (User can edit extracted text before analyzing) ═══ */}
-            {view==="review_ocr" && (
-              <div className="fade-up" style={{display:"flex",flexDirection:"column",gap:"10px",marginTop:"4px"}}>
-                {capturedImg && <img src={capturedImg} alt="" style={{width:"100%",maxHeight:"120px",objectFit:"cover",borderRadius:"11px",opacity:0.5}}/>}
-                <div style={{background:"var(--surface)",border:"1px solid var(--green)30",borderRadius:"11px",padding:"12px"}}>
-                  <div style={{display:"flex",alignItems:"center",gap:"6px",marginBottom:"8px"}}>
-                    <span style={{color:"var(--green)",fontSize:"13px",fontWeight:700}}>✓ Text extracted from image</span>
-                  </div>
-                  <p style={{color:"var(--dim)",fontSize:"10.5px",margin:"0 0 8px"}}>Review & edit if needed, then tap Analyze:</p>
-                  <textarea value={extractedText} onChange={e=>setExtractedText(e.target.value)} rows={6} style={{width:"100%",background:"#0a0a14",border:"1px solid var(--border)",borderRadius:"9px",padding:"11px",color:"var(--text)",fontSize:"13px",resize:"vertical",outline:"none",lineHeight:1.6}}/>
-                </div>
-                <div style={{display:"flex",gap:"8px"}}>
-                  <button onClick={()=>{setView("home");setExtractedText("");}} style={{flex:1,background:"var(--surface)",border:"1px solid var(--border)",borderRadius:"11px",padding:"13px",color:"var(--muted)",fontSize:"14px",fontWeight:600}}>Cancel</button>
-                  <button onClick={()=>{if(extractedText.trim().length>=5) analyze(extractedText.trim())}} disabled={extractedText.trim().length<5} style={{flex:2,background:extractedText.trim().length<5?"var(--surface)":"linear-gradient(135deg,#34d399,#059669)",borderRadius:"11px",padding:"13px",color:"#fff",fontSize:"14px",fontWeight:700,opacity:extractedText.trim().length<5?0.4:1,cursor:extractedText.trim().length<5?"not-allowed":"pointer",boxShadow:"0 4px 16px #34d39930"}}>🔬 Analyze Ingredients</button>
-                </div>
+                <p style={{color:"var(--dim)",fontSize:"10px",marginTop:"8px"}}>Reading label, then analyzing automatically...</p>
               </div>
             )}
 
@@ -652,10 +794,10 @@ Categories for cleaning: surfactant|solvent|builder|bleach|enzyme|fragrance|pres
                   <p style={{color:"var(--muted)",fontSize:"11.5px",margin:"0 0 14px",lineHeight:1.5}}>Help others discover what's in their products — share Ingredient Lens!</p>
                   <div style={{display:"flex",gap:"8px",justifyContent:"center"}}>
                     {[
-                      {name:"LinkedIn",color:"#0A66C2",icon:"in",url:`https://www.linkedin.com/sharing/share-offsite/?url=${encodeURIComponent("https://ingri-lens.netlify.app")}`},
-                      {name:"X",color:"#e0e0e0",icon:"𝕏",url:`https://x.com/intent/tweet?text=${encodeURIComponent("Just scanned my product labels with Ingredient Lens 🔍 — instantly shows what's safe, what's harmful, and what to swap. Try it yourself 👇\n\nhttps://ingri-lens.netlify.app")}`},
+                      {name:"LinkedIn",color:"#0A66C2",icon:"in",url:`https://www.linkedin.com/sharing/share-offsite/?url=${encodeURIComponent("https://ingrilens.netlify.app")}`},
+                      {name:"X",color:"#e0e0e0",icon:"𝕏",url:`https://x.com/intent/tweet?text=${encodeURIComponent("Just scanned my product labels with Ingredient Lens 🔍 — instantly shows what's safe, what's harmful, and what to swap. Try it yourself 👇\n\nhttps://ingrilens.netlify.app")}`},
                       {name:"Instagram",color:"#E4405F",icon:"📸",url:`https://www.instagram.com/`},
-                      {name:"Facebook",color:"#1877F2",icon:"f",url:`https://www.facebook.com/sharer/sharer.php?u=${encodeURIComponent("https://ingri-lens.netlify.app")}`},
+                      {name:"Facebook",color:"#1877F2",icon:"f",url:`https://www.facebook.com/sharer/sharer.php?u=${encodeURIComponent("https://ingrilens.netlify.app")}`},
                     ].map(s=>(
                       <button key={s.name} onClick={()=>window.open(s.url,"_blank","width=600,height=400")} style={{
                         background:`${s.color}18`,border:`1px solid ${s.color}35`,borderRadius:"10px",
