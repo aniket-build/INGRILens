@@ -360,7 +360,7 @@ Categories for cleaning: surfactant|solvent|builder|bleach|enzyme|fragrance|pres
           });
 
           const data = await resp.json();
-          if (data.error) throw new Error(data.error.message);
+          if (data.error) throw new Error("Couldn't process the image right now. Please try again in a moment.");
 
           const text = data.content?.map(c => c.text || "").join("").trim();
           console.log("Haiku extracted:", text);
@@ -389,7 +389,7 @@ Categories for cleaning: surfactant|solvent|builder|bleach|enzyme|fragrance|pres
           });
 
           const data = await resp.json();
-          if (data.error) throw new Error(data.error.message || data.error.type || "API error");
+          if (data.error) throw new Error("Couldn't analyze right now. Please try again in a moment.");
           if (!data.content) throw new Error("No response. Check Netlify Function logs.");
 
           const text = data.content?.map(c => c.text || "").join("") || "";
@@ -564,7 +564,6 @@ Categories for cleaning: surfactant|solvent|builder|bleach|enzyme|fragrance|pres
                 <div style={{width:"40px",height:"40px",border:"3px solid #1e1e2e",borderTop:"3px solid #34d399",borderRadius:"50%",margin:"0 auto 14px",animation:"spin .8s linear infinite"}}/>
                 <p style={{color:"var(--indigo)",fontSize:"14px",fontWeight:600}}>Analyzing ingredients...</p>
                 <p style={{color:"var(--dim)",fontSize:"11px"}}>Detecting type · Evaluating ingredients · Finding alternatives</p>
-                <div style={{marginTop:"14px",background:"var(--surface)",borderRadius:"20px",padding:"4px 14px",display:"inline-block"}}><span style={{color:"var(--green)",fontSize:"10px",fontFamily:"var(--mono)"}}>💡 Only text sent — saves cost & speeds up results</span></div>
               </div>
             )}
 

@@ -93,7 +93,7 @@ exports.handler = async (event) => {
       return { statusCode: 413, headers: cors, body: JSON.stringify({ error: { message: 'Image too large' } }) };
     }
     anthropicBody = {
-      model: 'claude-haiku-4-5-20251001',
+      model: 'claude-haiku-4-5',
       max_tokens: 1500,
       messages: [{
         role: 'user',
@@ -109,7 +109,7 @@ exports.handler = async (event) => {
       return { statusCode: 400, headers: cors, body: JSON.stringify({ error: { message: 'Ingredient text too short' } }) };
     }
     anthropicBody = {
-      model: 'claude-sonnet-4-20250514',
+      model: 'claude-sonnet-4-6',
       max_tokens: 4096,
       system: ANALYSIS_PROMPT,
       messages: [{ role: 'user', content: `Ingredient list from a product:\n\n${text}\n\nDetect type and analyze.` }],
