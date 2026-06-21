@@ -151,7 +151,7 @@ exports.handler = async (event) => {
       return { statusCode: 400, headers: cors, body: JSON.stringify({ error: { message: 'Ingredient text too short' } }) };
     }
     anthropicBody = {
-      model: 'claude-sonnet-4-6',
+      model: 'claude-haiku-4-5',
       max_tokens: 2200,
       system: ANALYSIS_PROMPT,
       messages: [{ role: 'user', content: `Ingredient list from a product:\n\n${text}\n\nDetect type and analyze.` }],
@@ -165,7 +165,7 @@ exports.handler = async (event) => {
     const startTime = Date.now();
 
     const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 25500);
+    const timeoutId = setTimeout(() => controller.abort(), 15000);
 
     const response = await fetch('https://api.anthropic.com/v1/messages', {
       method: 'POST',
